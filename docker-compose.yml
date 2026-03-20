@@ -1,0 +1,8 @@
+services:
+  diet-agent:
+    build: .
+    container_name: diet-agent
+    restart: unless-stopped
+    env_file:
+      - .env
+    mem_limit: 512m
