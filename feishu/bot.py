@@ -11,6 +11,8 @@ from langchain_core.messages import HumanMessage, AIMessage
 from agent.agent import create_agent
 from feishu.client import feishu_client
 from tools.food_vision import recognize_food_photo_sync
+from tools.utils import today
+from session import load_history, save_history
 from config import FEISHU_APP_ID, FEISHU_APP_SECRET
 
 logger = logging.getLogger(__name__)
@@ -18,11 +20,29 @@ logger = logging.getLogger(__name__)
 # Agent 实例
 agent_executor = create_agent()
 
-# 用户会话历史（生产环境建议换 Redis）
-sessions: dict[str, list] = {}
-
 # 已处理的消息 ID（飞书会重复推送，需去重）
 processed_msg_ids: set[str] = set()
+
+
+def _get_today_context() -> str:
+    """读取今日表格数据，作为上下文注入"""
+    try:
+        from config import TABLE_ID
+        records = feishu_client.query_records_by_date(TABLE_ID, "日期", today())
+        if not records:
+            return "今日暂无记录。"
+        fields = records[0].get("fields", {})
+        parts = [f"今日（{today()}）已记录数据："]
+        for key in ["早餐", "午餐", "晚餐", "加餐", "总摄入(kcal)", "蛋白质(g)",
+                     "脂肪(g)", "碳水(g)", "运动", "消耗(kcal)", "晨重(kg)",
+                     "晚重(kg)", "饮水(ml)", "睡眠", "心情"]:
+            val = fields.get(key)
+            if val:
+                parts.append(f"  {key}: {val}")
+        return "\n".join(parts)
+    except Exception as e:
+        print(f"[Context] 读取今日数据失败: {e}", flush=True)
+        return ""
 
 
 def _on_message(data: P2ImMessageReceiveV1):
@@ -57,8 +77,8 @@ def _handle_message(event):
     message_id = message.message_id
     content_str = message.content or "{}"
 
-    # 获取用户会话历史
-    chat_history = sessions.setdefault(user_id, [])
+    # 从文件加载会话历史
+    chat_history = load_history(user_id)
 
     # 根据消息类型解析内容
     if msg_type == "text":
@@ -96,8 +116,16 @@ def _handle_message(event):
     except Exception as e:
         print(f"[Reaction] 添加失败: {e}", flush=True)
 
-    # 调用 Agent（langgraph 格式）
-    messages = chat_history + [HumanMessage(content=user_input)]
+    # 注入今日表格数据作为上下文（拼到用户消息前面，避免 system message 位置问题）
+    today_context = _get_today_context()
+    if today_context:
+        user_input = f"[当前表格数据]\n{today_context}\n\n[用户消息]\n{user_input}"
+
+    # 构建消息列表
+    messages = list(chat_history)
+    messages.append(HumanMessage(content=user_input))
+
+    # 调用 Agent
     result = agent_executor.invoke({"messages": messages})
 
     reply = result["messages"][-1].content
@@ -112,11 +140,10 @@ def _handle_message(event):
         except Exception as e:
             print(f"[Reaction] 移除失败: {e}", flush=True)
 
-    # 更新会话历史（保留最近 20 轮）
+    # 更新并持久化会话历史（不存 context_msg，只存用户和 AI 消息）
     chat_history.append(HumanMessage(content=user_input))
     chat_history.append(AIMessage(content=reply))
-    if len(chat_history) > 40:
-        chat_history[:] = chat_history[-40:]
+    save_history(user_id, chat_history)
 
     # 回复用户
     feishu_client.reply_message(message_id, reply)
