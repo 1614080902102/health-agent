@@ -40,13 +40,18 @@ def _on_message(data: P2ImMessageReceiveV1):
 
     try:
         _handle_message(event)
-    except Exception:
+    except Exception as e:
         logger.exception("处理消息异常")
+        try:
+            msg_id = event.message.message_id
+            feishu_client.reply_message(msg_id, f"处理出错了：{e}")
+        except Exception:
+            pass
 
 
 def _handle_message(event):
     """处理单条消息"""
-    user_id = event.sender.sender_id.user_id or "unknown"
+    user_id = event.sender.sender_id.open_id or event.sender.sender_id.user_id or "unknown"
     message = event.message
     msg_type = message.message_type
     message_id = message.message_id

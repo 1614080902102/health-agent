@@ -64,8 +64,13 @@ class FeishuBitableClient:
             headers=self._headers,
             json={"fields": fields},
         )
+        result = resp.json()
+        if result.get("code") != 0:
+            print(f"[update_record] 失败: {result}", flush=True)
+        else:
+            print(f"[update_record] 成功: record_id={record_id}", flush=True)
         resp.raise_for_status()
-        return resp.json()
+        return result
 
     def query_records_by_date(self, table_id: str, field_name: str, date_value: str) -> list[dict]:
         """按日期字段查询记录"""
